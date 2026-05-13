@@ -350,17 +350,24 @@ def load_content(filename: str) -> str:
 
 
 def chat_completion(messages: list) -> str:
-    response = http_post(
+    data = json.dumps({
+        "model": OPENAI_MODEL_TRAINING,
+        "messages": messages,
+        "max_tokens": 1200,
+        "temperature": 0.7,
+    }).encode("utf-8")
+    req = urllib.request.Request(
         "https://api.openai.com/v1/chat/completions",
-        {
-            "model": OPENAI_MODEL_TRAINING,
-            "messages": messages,
-            "max_tokens": 1200,
-            "temperature": 0.7,
-        },
-        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        data=data, method="POST"
     )
-    return response["choices"][0]["message"]["content"].strip()
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"OpenAI {e.code}: {body[:500]}") from e
 
 
 def build_ps_system_prompt() -> str:
