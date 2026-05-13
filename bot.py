@@ -24,9 +24,18 @@ INTERVIEW_LOG_PATH = os.environ.get(
     "/Users/DimaKu/Documents/Coding/product-cases/notes/interview-log.md"
 )
 NOTION_TRAINING_PAGE_ID = os.environ.get("NOTION_TRAINING_PAGE_ID", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 OPENAI_MODEL_EXTRACT = "gpt-4o-mini"
 OPENAI_MODEL_TRAINING = "gpt-5.5"
+
+AVAILABLE_MODELS = [
+    ("gpt-4o",                    "openai",    "OpenAI · fast"),
+    ("gpt-5.5",                   "openai",    "OpenAI · flagship"),
+    ("claude-haiku-4-5-20251001", "anthropic", "Anthropic · fast & cheap"),
+    ("claude-sonnet-4-6",         "anthropic", "Anthropic · balanced"),
+    ("claude-opus-4-7",           "anthropic", "Anthropic · most capable"),
+]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
@@ -43,6 +52,10 @@ FLUSH_AFTER = 3
 active_sessions: dict = {}
 # Pending vacancy selection: chat_id -> list of vacancy dicts
 pending_vacancy_picks: dict = {}
+# Per-user model choice: chat_id -> (model_name, provider)
+session_models: dict = {}
+# Waiting for model number pick
+pending_model_pick: set = set()
 
 CASES_CONTEXT = (
     "Diagnose cases: Instagram, LinkedIn, Notion, Slack, Spotify, Uber\n"
@@ -349,9 +362,9 @@ def load_content(filename: str) -> str:
         return ""
 
 
-def chat_completion(messages: list) -> str:
+def _openai_completion(messages: list, model: str) -> str:
     data = json.dumps({
-        "model": OPENAI_MODEL_TRAINING,
+        "model": model,
         "messages": messages,
         "max_tokens": 1200,
         "temperature": 0.7,
@@ -368,6 +381,53 @@ def chat_completion(messages: list) -> str:
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"OpenAI {e.code}: {body[:500]}") from e
+
+
+def _anthropic_completion(messages: list, model: str) -> str:
+    system = ""
+    filtered = []
+    for m in messages:
+        if m["role"] == "system":
+            system = m["content"]
+        else:
+            filtered.append(m)
+
+    payload = {"model": model, "max_tokens": 1200, "messages": filtered}
+    if system:
+        payload["system"] = system
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=data, method="POST"
+    )
+    req.add_header("Content-Type", "application/json")
+    req.add_header("x-api-key", ANTHROPIC_API_KEY)
+    req.add_header("anthropic-version", "2023-06-01")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())["content"][0]["text"].strip()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Anthropic {e.code}: {body[:500]}") from e
+
+
+def chat_completion(messages: list, chat_id: int = 0) -> str:
+    model, provider = session_models.get(chat_id, (OPENAI_MODEL_TRAINING, "openai"))
+    if provider == "anthropic":
+        return _anthropic_completion(messages, model)
+    return _openai_completion(messages, model)
+
+
+def handle_model_command(chat_id: int) -> None:
+    current_model, _ = session_models.get(chat_id, (OPENAI_MODEL_TRAINING, "openai"))
+    lines = [f"🤖 *Current model:* `{current_model}`\n\n*Switch to:*\n"]
+    for i, (model_id, _, label) in enumerate(AVAILABLE_MODELS, 1):
+        marker = "✅ " if model_id == current_model else ""
+        lines.append(f"{i}. {marker}`{model_id}` — {label}")
+    lines.append("\nReply with a number to switch.")
+    send_message(chat_id, "\n".join(lines))
+    pending_model_pick.add(chat_id)
 
 
 def build_ps_system_prompt() -> str:
@@ -458,7 +518,7 @@ def _start_session_with_prompt(chat_id: int, session_type: str, system_prompt: s
         first_msg = chat_completion([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": opener},
-        ])
+        ], chat_id=chat_id)
         active_sessions[chat_id]["history"].append({"role": "assistant", "content": first_msg})
         active_sessions[chat_id]["question_count"] = 1
         edit_message(chat_id, message_id, first_msg)
@@ -555,7 +615,7 @@ def handle_training_message(chat_id: int, text: str) -> None:
     message_id = status_msg["result"]["message_id"]
     try:
         messages = [{"role": "system", "content": session["system"]}] + session["history"]
-        reply = chat_completion(messages)
+        reply = chat_completion(messages, chat_id=chat_id)
         session["history"].append({"role": "assistant", "content": reply})
         edit_message(chat_id, message_id, reply)
     except Exception as e:
@@ -589,7 +649,7 @@ def end_session(chat_id: int) -> None:
             + session["history"]
             + [{"role": "user", "content": summary_request}]
         )
-        summary = chat_completion(messages)
+        summary = chat_completion(messages, chat_id=chat_id)
 
         _save_session_locally(session, summary, duration_min)
         notion_url = _save_session_to_notion(session, summary, duration_min)
@@ -732,6 +792,23 @@ def process_message(message: dict) -> None:
         end_session(chat_id)
         return
 
+    # /model
+    if text.strip() == "/model":
+        handle_model_command(chat_id)
+        return
+
+    # Model number pick
+    if chat_id in pending_model_pick and text.strip().isdigit():
+        idx = int(text.strip()) - 1
+        if 0 <= idx < len(AVAILABLE_MODELS):
+            model_id, provider, label = AVAILABLE_MODELS[idx]
+            session_models[chat_id] = (model_id, provider)
+            pending_model_pick.discard(chat_id)
+            send_message(chat_id, f"✅ Model switched to `{model_id}` ({label})")
+        else:
+            send_message(chat_id, f"Pick a number between 1 and {len(AVAILABLE_MODELS)}.")
+        return
+
     # /train
     if text.startswith("/train"):
         handle_train_command(chat_id, text[len("/train"):])
@@ -785,7 +862,8 @@ def process_message(message: dict) -> None:
         "/train ps — Product Sense interview\n"
         "/train vacancy — Prep for specific vacancy\n"
         "/train english — English practice\n"
-        "/stop — End current session"
+        "/stop — End current session\n"
+        "/model — Switch AI model"
     ))
 
 
