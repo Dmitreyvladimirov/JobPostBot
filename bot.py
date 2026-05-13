@@ -19,6 +19,14 @@ LINKEDIN_STRATEGY_PATH = os.environ.get(
     "LINKEDIN_STRATEGY_PATH",
     "/Users/DimaKu/Documents/Coding/LinkedIn posting/linkedin/strategy.md"
 )
+INTERVIEW_LOG_PATH = os.environ.get(
+    "INTERVIEW_LOG_PATH",
+    "/Users/DimaKu/Documents/Coding/product-cases/notes/interview-log.md"
+)
+NOTION_TRAINING_PAGE_ID = os.environ.get("NOTION_TRAINING_PAGE_ID", "")
+
+OPENAI_MODEL_EXTRACT = "gpt-4o-mini"
+OPENAI_MODEL_TRAINING = "gpt-5.5-2026-04-23"
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
@@ -29,7 +37,12 @@ NOTION_HEADERS = {
 
 # Buffer for split messages: chat_id -> {"url": str, "text": str, "ts": float}
 pending_jobs: dict = {}
-FLUSH_AFTER = 3  # seconds to wait for a continuation message
+FLUSH_AFTER = 3
+
+# Training session state: chat_id -> session dict
+active_sessions: dict = {}
+# Pending vacancy selection: chat_id -> list of vacancy dicts
+pending_vacancy_picks: dict = {}
 
 CASES_CONTEXT = (
     "Diagnose cases: Instagram, LinkedIn, Notion, Slack, Spotify, Uber\n"
@@ -38,6 +51,8 @@ CASES_CONTEXT = (
     "Frameworks: diagnose, metrics, prioritization, question types"
 )
 
+
+# ── Utilities ────────────────────────────────────────────────────────────────
 
 def http_post(url: str, payload: dict, headers: dict = None, method: str = "POST") -> dict:
     data = json.dumps(payload).encode("utf-8")
@@ -105,6 +120,8 @@ def strip_html(html: str) -> str:
     return text
 
 
+# ── Job Processing ────────────────────────────────────────────────────────────
+
 def fetch_page_content(url: str) -> str:
     params = urllib.parse.urlencode({
         "api_key": SCRAPINGBEE_API_KEY,
@@ -118,25 +135,24 @@ def extract_job_data(content: str) -> dict:
     if len(content.strip()) < 200:
         raise ValueError("Page content too short — ScrapingBee likely failed to load the page")
 
-    prompt = f"""You are extracting job posting data. Analyze the following job posting content and return ONLY a valid JSON object with these exact fields:
-- "position": job title/position name (string, or null if not found)
-- "company_name": company name (string, or null if not found)
-- "company_website": company's main website URL, NOT the job posting URL (string or null)
-- "description": clean plain-text job description (responsibilities, requirements, about the role). Strip all HTML, navigation, footers, ads. Return null if not found.
-- "key_skills": list of up to 8 key required skills or technologies (array of strings, or empty array)
-- "domain": primary business domain — one of: SaaS, FinTech, AI, EdTech, Marketplace, HealthTech, Other (string)
-- "interview_focus": likely interview focus — one of: product-sense, execution, strategy, mixed (string)
+    prompt = f"""You are extracting job posting data. Return ONLY a valid JSON object with these fields:
+- "position": job title (string or null)
+- "company_name": company name (string or null)
+- "company_website": company main website URL, NOT the job posting URL (string or null)
+- "description": clean plain-text job description, strip HTML/navigation/ads (string or null)
+- "key_skills": up to 8 key required skills or technologies (array of strings)
+- "domain": one of: SaaS, FinTech, AI, EdTech, Marketplace, HealthTech, Other (string)
+- "interview_focus": one of: product-sense, execution, strategy, mixed (string)
 
-If the content does not look like a job posting, return all fields as null or empty.
-Return ONLY the JSON object, no explanation, no markdown, no backticks.
+If not a job posting, return all fields as null or empty. No markdown, no backticks.
 
-Job posting content:
+Content:
 {content}"""
 
     response = http_post(
         "https://api.openai.com/v1/chat/completions",
         {
-            "model": "gpt-4o-mini",
+            "model": OPENAI_MODEL_EXTRACT,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 2000,
             "temperature": 0,
@@ -156,39 +172,35 @@ def generate_prep_checklist(job_data: dict) -> str:
     interview_focus = job_data.get("interview_focus") or "mixed"
     key_skills = ", ".join(job_data.get("key_skills") or []) or "not specified"
 
-    prompt = f"""You are an interview prep advisor for a Product Manager candidate actively job hunting.
+    prompt = f"""You are an interview prep advisor for a Product Manager candidate.
 
-The candidate has these interview cases and frameworks ready:
+Candidate's available cases:
 {CASES_CONTEXT}
 
-Job details:
-- Position: {position} at {company}
-- Domain: {domain}
-- Interview focus likely: {interview_focus}
-- Key skills required: {key_skills}
+Job: {position} at {company} | Domain: {domain} | Focus: {interview_focus} | Skills: {key_skills}
 
-Write a concise interview prep checklist. Use this exact structure:
+Write a concise prep checklist using this structure exactly:
 
 ## Top 3 Cases to Review
-1. [case name] — [one sentence: why it's the most relevant for this role]
+1. [case name] — [one sentence: why relevant for this role]
 2. [case name] — [one sentence why]
 3. [case name] — [one sentence why]
 
 ## Company-Specific Practice Prompt
-[One tailored practice question for this specific company/domain, e.g. "How would you diagnose a 15% drop in [their key metric]?"]
+[One tailored practice question for this company/domain]
 
 ## Key Focus Areas
-- [2-3 specific things to emphasize based on the job requirements]
+- [2-3 things to emphasize based on requirements]
 
 ## English Vocabulary to Prepare
-- [3-5 PM terms or phrases specific to this domain or role type]
+- [3-5 PM terms specific to this domain]
 
-Be specific. Avoid generic advice."""
+Be specific. No generic advice."""
 
     response = http_post(
         "https://api.openai.com/v1/chat/completions",
         {
-            "model": "gpt-4o-mini",
+            "model": OPENAI_MODEL_EXTRACT,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 800,
             "temperature": 0.3,
@@ -209,8 +221,7 @@ def make_text_blocks(text: str) -> list:
 
 def make_heading_block(text: str) -> dict:
     return {
-        "object": "block",
-        "type": "heading_2",
+        "object": "block", "type": "heading_2",
         "heading_2": {"rich_text": [{"type": "text", "text": {"content": text}}]}
     }
 
@@ -222,7 +233,6 @@ def make_divider_block() -> dict:
 def create_notion_card(position: str, company_name: str, job_url: str,
                        company_website: str | None, description: str | None,
                        prep_checklist: str | None = None) -> tuple[str, str]:
-    """Returns (page_url, page_id)."""
     today = date.today().isoformat()
     title = f"{position} ({company_name})" if company_name else position
     properties = {
@@ -254,7 +264,6 @@ def create_notion_card(position: str, company_name: str, job_url: str,
 
 
 def update_notion_extended_props(page_id: str, key_skills: list, domain: str, interview_focus: str) -> None:
-    """Update card with extended properties. Fails gracefully if properties don't exist in DB yet."""
     properties = {}
     if key_skills:
         properties["Key Skills"] = {"multi_select": [{"name": s[:100]} for s in key_skills[:10]]}
@@ -262,10 +271,8 @@ def update_notion_extended_props(page_id: str, key_skills: list, domain: str, in
         properties["Domain"] = {"select": {"name": domain}}
     if interview_focus:
         properties["Interview Focus"] = {"select": {"name": interview_focus}}
-
     if not properties:
         return
-
     try:
         http_post(
             f"https://api.notion.com/v1/pages/{page_id}",
@@ -274,18 +281,18 @@ def update_notion_extended_props(page_id: str, key_skills: list, domain: str, in
             method="PATCH"
         )
     except Exception as e:
-        logger.warning(f"Extended props not updated (add Key Skills/Domain/Interview Focus to Notion DB): {e}")
+        logger.warning(f"Extended props not updated (add Key Skills/Domain/Interview Focus to DB): {e}")
 
+
+# ── Voice & Ideas ─────────────────────────────────────────────────────────────
 
 def get_telegram_file_bytes(file_id: str) -> tuple[bytes, str]:
-    """Download a file from Telegram. Returns (bytes, filename)."""
     params = urllib.parse.urlencode({"file_id": file_id})
     req = urllib.request.Request(f"{TELEGRAM_API}/getFile?{params}")
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
     file_path = data["result"]["file_path"]
     filename = file_path.split("/")[-1]
-
     file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
     req = urllib.request.Request(file_url)
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -293,12 +300,9 @@ def get_telegram_file_bytes(file_id: str) -> tuple[bytes, str]:
 
 
 def transcribe_voice(file_id: str) -> str:
-    """Transcribe a Telegram voice/audio message via Whisper API."""
     audio_bytes, filename = get_telegram_file_bytes(file_id)
-
     boundary = f"----FormBoundary{int(time.time())}"
     crlf = b"\r\n"
-
     parts = [
         f"--{boundary}".encode() + crlf,
         b'Content-Disposition: form-data; name="model"' + crlf + crlf,
@@ -309,23 +313,15 @@ def transcribe_voice(file_id: str) -> str:
         audio_bytes + crlf,
         f"--{boundary}--".encode() + crlf,
     ]
-
     body = b"".join(parts)
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/audio/transcriptions",
-        data=body,
-        method="POST"
-    )
+    req = urllib.request.Request("https://api.openai.com/v1/audio/transcriptions", data=body, method="POST")
     req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-
     with urllib.request.urlopen(req, timeout=120) as resp:
-        result = json.loads(resp.read())
-    return result["text"]
+        return json.loads(resp.read())["text"]
 
 
 def append_post_idea(text: str, chat_id: int) -> None:
-    """Append a LinkedIn post idea to strategy.md."""
     entry = f"\n\n- [ ] **{datetime.now().strftime('%Y-%m-%d')}** — {text}"
     try:
         with open(LINKEDIN_STRATEGY_PATH, "a", encoding="utf-8") as f:
@@ -336,6 +332,301 @@ def append_post_idea(text: str, chat_id: int) -> None:
         logger.error(f"Failed to save post idea: {e}")
         send_message(chat_id, f"❌ Couldn't save idea: {str(e)}")
 
+
+# ── Training Module ───────────────────────────────────────────────────────────
+
+def load_content(filename: str) -> str:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "content", filename)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        logger.warning(f"Content file not found: {path}")
+        return ""
+
+
+def chat_completion(messages: list) -> str:
+    response = http_post(
+        "https://api.openai.com/v1/chat/completions",
+        {
+            "model": OPENAI_MODEL_TRAINING,
+            "messages": messages,
+            "max_tokens": 1200,
+            "temperature": 0.7,
+        },
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    )
+    return response["choices"][0]["message"]["content"].strip()
+
+
+def build_ps_system_prompt() -> str:
+    return f"""You are a senior PM interviewer at a top tech company conducting a product sense interview.
+
+Each turn:
+1. Ask ONE product sense question (rotate types: diagnose, improve retention/engagement, favorite product, 0→1, strategy)
+2. After the candidate answers, give structured feedback
+3. Then ask the next question
+
+Feedback format:
+✅ What worked: [specific, reference the framework]
+❌ What was missing: [what a senior PM would add]
+📊 Score: Structure X/5 | Depth X/5 | Product Thinking X/5 | Communication X/5
+
+Use these as your evaluation standard:
+
+{load_content("cheatsheet.md")}
+
+---
+
+{load_content("frameworks.md")}
+
+---
+
+Be a tough but fair interviewer. Push back on generic answers. Start with one question now."""
+
+
+def build_english_system_prompt() -> str:
+    return f"""You are an English coach for a Russian-speaking Product Manager preparing for interviews.
+
+The candidate's known error patterns:
+{load_content("english-errors.md")}
+
+Key PM vocabulary to reinforce:
+{load_content("english-vocab.md")}
+
+Each turn, give ONE exercise (rotate types):
+1. PM concept or sentence in Russian → candidate translates to English
+2. Weak or incorrect PM phrase → candidate improves it
+3. Scenario → candidate uses a specific target word correctly
+
+Feedback format:
+✅ Correct: [what they got right]
+❌ Error: [what was wrong, reference error log if it matches a known pattern]
+💡 Better: [the ideal version]
+
+One exercise at a time. Start now."""
+
+
+def handle_train_command(chat_id: int, args: str) -> None:
+    if chat_id in active_sessions:
+        send_message(chat_id, "⚠️ You're already in a session. Use /stop to end it first.")
+        return
+
+    args = args.strip().lower()
+
+    if args in ("ps", "product-sense", "productsense"):
+        start_ps_session(chat_id)
+    elif args in ("english", "en"):
+        start_english_session(chat_id)
+    elif args in ("vacancy", "v", "vac"):
+        fetch_and_show_vacancies(chat_id)
+    else:
+        send_message(chat_id, (
+            "🎯 *Choose training type:*\n\n"
+            "➤ /train ps — Product Sense interview\n"
+            "➤ /train vacancy — Prep for a specific vacancy\n"
+            "➤ /train english — English practice\n\n"
+            "Use /stop to end any session."
+        ))
+
+
+def _start_session_with_prompt(chat_id: int, session_type: str, system_prompt: str,
+                                opener: str, extra: dict = None) -> None:
+    """Shared session start logic."""
+    active_sessions[chat_id] = {
+        "type": session_type,
+        "system": system_prompt,
+        "history": [],
+        "start_time": time.time(),
+        "question_count": 0,
+        **(extra or {}),
+    }
+    status_msg = send_message(chat_id, "⏳ Loading session...")
+    message_id = status_msg["result"]["message_id"]
+    try:
+        first_msg = chat_completion([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": opener},
+        ])
+        active_sessions[chat_id]["history"].append({"role": "assistant", "content": first_msg})
+        active_sessions[chat_id]["question_count"] = 1
+        edit_message(chat_id, message_id, first_msg)
+    except Exception as e:
+        logger.error(f"Failed to start {session_type} session: {e}")
+        del active_sessions[chat_id]
+        edit_message(chat_id, message_id, f"❌ Couldn't start session: {e}")
+
+
+def start_ps_session(chat_id: int) -> None:
+    _start_session_with_prompt(
+        chat_id, "product-sense",
+        build_ps_system_prompt(),
+        "Start the interview. Ask me the first question."
+    )
+
+
+def start_english_session(chat_id: int) -> None:
+    _start_session_with_prompt(
+        chat_id, "english",
+        build_english_system_prompt(),
+        "Start the session. Give me the first exercise."
+    )
+
+
+def fetch_and_show_vacancies(chat_id: int) -> None:
+    status_msg = send_message(chat_id, "📋 Fetching recent vacancies...")
+    message_id = status_msg["result"]["message_id"]
+    try:
+        response = http_post(
+            f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query",
+            {"sorts": [{"property": "Date Applied", "direction": "descending"}], "page_size": 5},
+            headers=NOTION_HEADERS
+        )
+        pages = response.get("results", [])
+        if not pages:
+            edit_message(chat_id, message_id, "No vacancies found. Send a job URL first!")
+            return
+
+        vacancies = []
+        for page in pages:
+            props = page.get("properties", {})
+            title_parts = props.get("Позиция", {}).get("title", [])
+            title = title_parts[0]["text"]["content"] if title_parts else "Unknown"
+            date_prop = props.get("Date Applied", {}).get("date") or {}
+            date_str = date_prop.get("start", "")[:10]
+            domain_prop = props.get("Domain", {}).get("select") or {}
+            domain = domain_prop.get("name", "")
+            vacancies.append({"id": page["id"], "title": title, "date": date_str, "domain": domain})
+
+        pending_vacancy_picks[chat_id] = vacancies
+        lines = ["📋 *Recent vacancies:*\n"]
+        for i, v in enumerate(vacancies, 1):
+            meta = f" · {v['domain']}" if v["domain"] else ""
+            lines.append(f"{i}. {v['title']}{meta} _{v['date']}_")
+        lines.append("\nReply with a number (1–5) to start prep.")
+        edit_message(chat_id, message_id, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to fetch vacancies: {e}")
+        edit_message(chat_id, message_id, f"❌ Couldn't fetch vacancies: {e}")
+
+
+def start_vacancy_session(chat_id: int, vacancy: dict) -> None:
+    system_prompt = f"""You are an experienced recruiter conducting a screening call.
+
+Position: {vacancy['title']}{' (' + vacancy['domain'] + ')' if vacancy.get('domain') else ''}
+
+Your job:
+1. Simulate a realistic recruiter call — start with a natural opener ("Tell me about yourself" adapted to this role)
+2. Ask follow-up questions based on the candidate's answers
+3. After each answer, add a brief coach note: what landed well and what to sharpen
+
+On /stop, give full coaching summary:
+- What came across well
+- What needs sharper framing
+- 3 specific phrases to use or avoid in the real interview
+
+Keep it conversational. Be encouraging but realistic."""
+
+    _start_session_with_prompt(
+        chat_id, "vacancy",
+        system_prompt,
+        "Start the interview.",
+        extra={"vacancy": vacancy}
+    )
+
+
+def handle_training_message(chat_id: int, text: str) -> None:
+    session = active_sessions[chat_id]
+    session["history"].append({"role": "user", "content": text})
+    session["question_count"] += 1
+
+    status_msg = send_message(chat_id, "💭 ...")
+    message_id = status_msg["result"]["message_id"]
+    try:
+        messages = [{"role": "system", "content": session["system"]}] + session["history"]
+        reply = chat_completion(messages)
+        session["history"].append({"role": "assistant", "content": reply})
+        edit_message(chat_id, message_id, reply)
+    except Exception as e:
+        logger.error(f"Training message error: {e}")
+        edit_message(chat_id, message_id, f"❌ Error: {e}")
+
+
+def end_session(chat_id: int) -> None:
+    session = active_sessions.pop(chat_id, None)
+    if not session:
+        send_message(chat_id, "No active session.")
+        return
+
+    status_msg = send_message(chat_id, "📊 Generating summary...")
+    message_id = status_msg["result"]["message_id"]
+    try:
+        duration_min = max(1, int((time.time() - session["start_time"]) / 60))
+        summary_request = (
+            f"The session just ended ({duration_min} min, {session['question_count']} exchanges).\n\n"
+            "Generate a session summary:\n\n"
+            "## Session Summary\n\n"
+            "### What went well\n[2-3 specific observations]\n\n"
+            "### Main areas to improve\n[2-3 specific points with examples from this session]\n\n"
+            "### Scores\n"
+            "- Structure: X/5\n- Depth/Accuracy: X/5\n- Communication/English: X/5\n- Overall: X/5\n\n"
+            "### Top 3 things to practice before next session\n1. \n2. \n3. \n\n"
+            "Be specific. Reference actual exchanges."
+        )
+        messages = (
+            [{"role": "system", "content": session["system"]}]
+            + session["history"]
+            + [{"role": "user", "content": summary_request}]
+        )
+        summary = chat_completion(messages)
+
+        _save_session_locally(session, summary, duration_min)
+        notion_url = _save_session_to_notion(session, summary, duration_min)
+        notion_link = f"\n\n[View in Notion]({notion_url})" if notion_url else ""
+
+        edit_message(chat_id, message_id, summary + notion_link)
+    except Exception as e:
+        logger.error(f"Failed to end session: {e}")
+        edit_message(chat_id, message_id, f"❌ Couldn't generate summary: {e}")
+
+
+def _save_session_locally(session: dict, summary: str, duration_min: int) -> None:
+    try:
+        if not os.path.exists(INTERVIEW_LOG_PATH):
+            return
+        session_type = session["type"]
+        vacancy_title = session.get("vacancy", {}).get("title", "")
+        header = f"\n\n---\n\n## {datetime.now().strftime('%Y-%m-%d')} — {session_type.title()} ({duration_min} min)"
+        if vacancy_title:
+            header += f" — {vacancy_title}"
+        with open(INTERVIEW_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(header + "\n\n" + summary)
+    except Exception as e:
+        logger.warning(f"Could not save session locally: {e}")
+
+
+def _save_session_to_notion(session: dict, summary: str, duration_min: int) -> str | None:
+    if not NOTION_TRAINING_PAGE_ID:
+        return None
+    try:
+        session_type = session["type"]
+        vacancy_title = session.get("vacancy", {}).get("title", "")
+        title = f"{datetime.now().strftime('%Y-%m-%d')} — {session_type.title()} ({duration_min} min)"
+        if vacancy_title:
+            title += f" — {vacancy_title}"
+        payload = {
+            "parent": {"page_id": NOTION_TRAINING_PAGE_ID},
+            "properties": {"title": {"title": [{"text": {"content": title}}]}},
+            "children": make_text_blocks(summary),
+        }
+        response = http_post("https://api.notion.com/v1/pages", payload, headers=NOTION_HEADERS)
+        return response.get("url")
+    except Exception as e:
+        logger.warning(f"Could not save session to Notion: {e}")
+        return None
+
+
+# ── Job Execution ─────────────────────────────────────────────────────────────
 
 def _execute_job(chat_id: int, job: dict) -> None:
     url = job["url"]
@@ -371,15 +662,13 @@ def _execute_job(chat_id: int, job: dict) -> None:
         if not position or not company_name:
             domain_match = re.search(r'https?://(?:www\.)?([^/]+)', url)
             domain_name = domain_match.group(1) if domain_match else url
-            if not company_name:
-                company_name = domain_name
-            if not position:
-                position = f"Job at {company_name}"
+            company_name = company_name or domain_name
+            position = position or f"Job at {company_name}"
             description = body_text or description
-            logger.warning(f"Fallback extraction: {position} / {company_name}")
+            logger.warning(f"Fallback: {position} / {company_name}")
 
         step = "PrepChecklist"
-        edit_message(chat_id, message_id, "📚 Generating interview prep checklist...")
+        edit_message(chat_id, message_id, "📚 Generating prep checklist...")
         prep_checklist = generate_prep_checklist(job_data)
 
         step = "Notion"
@@ -403,22 +692,53 @@ def _execute_job(chat_id: int, job: dict) -> None:
         edit_message(chat_id, message_id, f"❌ Error at {step}: {str(e)}")
 
 
+# ── Message Routing ───────────────────────────────────────────────────────────
+
 def process_message(message: dict) -> None:
     chat_id = message["chat"]["id"]
     text = message.get("text", "")
 
-    # Voice / audio → transcribe and save as post idea
+    # Voice / audio
     voice = message.get("voice") or message.get("audio")
     if voice:
         status_msg = send_message(chat_id, "🎙️ Transcribing...")
         message_id = status_msg["result"]["message_id"]
         try:
             transcribed = transcribe_voice(voice["file_id"])
-            edit_message(chat_id, message_id, f"🎙️ _{transcribed[:300]}_\n\nSaving to LinkedIn backlog...")
-            append_post_idea(transcribed, chat_id)
+            if chat_id in active_sessions:
+                edit_message(chat_id, message_id, f"🎙️ _{transcribed[:200]}_")
+                handle_training_message(chat_id, transcribed)
+            else:
+                edit_message(chat_id, message_id, f"🎙️ _{transcribed[:300]}_\n\nSaving to LinkedIn backlog...")
+                append_post_idea(transcribed, chat_id)
         except Exception as e:
-            logger.error(f"Voice transcription error: {e}", exc_info=True)
-            edit_message(chat_id, message_id, f"❌ Transcription failed: {str(e)}")
+            logger.error(f"Voice error: {e}", exc_info=True)
+            edit_message(chat_id, message_id, f"❌ Transcription failed: {e}")
+        return
+
+    # /stop
+    if text.strip() == "/stop":
+        end_session(chat_id)
+        return
+
+    # /train
+    if text.startswith("/train"):
+        handle_train_command(chat_id, text[len("/train"):])
+        return
+
+    # Active training session — route all messages there
+    if chat_id in active_sessions:
+        handle_training_message(chat_id, text)
+        return
+
+    # Vacancy selection from numbered list
+    if chat_id in pending_vacancy_picks and text.strip().isdigit():
+        idx = int(text.strip()) - 1
+        vacancies = pending_vacancy_picks.pop(chat_id)
+        if 0 <= idx < len(vacancies):
+            start_vacancy_session(chat_id, vacancies[idx])
+        else:
+            send_message(chat_id, f"Pick a number between 1 and {len(vacancies)}.")
         return
 
     # Post idea capture
@@ -427,36 +747,41 @@ def process_message(message: dict) -> None:
         if idea:
             append_post_idea(idea, chat_id)
         else:
-            send_message(chat_id, "💡 Send your idea after `#post` or `/idea`\nExample: `#post Why AI won't replace PMs`")
+            send_message(chat_id, "💡 Send your idea after `#post` or `/idea`")
         return
 
+    # Job URL
     url = extract_url(text)
-
     if url:
         if chat_id in pending_jobs:
             _execute_job(chat_id, pending_jobs.pop(chat_id))
         body_text = extract_body_text(text, url)
         pending_jobs[chat_id] = {"url": url, "text": body_text, "ts": time.time()}
-        logger.info(f"Buffered job for chat {chat_id}")
         return
 
     if chat_id in pending_jobs:
         existing = pending_jobs[chat_id]["text"]
         pending_jobs[chat_id]["text"] = (existing + "\n" + text).strip()
         pending_jobs[chat_id]["ts"] = time.time()
-        logger.info(f"Appended continuation for chat {chat_id}")
         return
 
     send_message(chat_id, (
-        "👋 What I can do:\n\n"
-        "🔗 *Job URL* → Notion card + interview prep checklist\n"
-        "💡 `#post your idea` → LinkedIn backlog\n"
-        "🎙️ *Voice note* → transcribe and save as post idea"
+        "👋 *What I can do:*\n\n"
+        "🔗 Job URL → Notion card + prep checklist\n"
+        "💡 `#post idea` → LinkedIn backlog\n"
+        "🎙️ Voice note → transcribe + save\n\n"
+        "🎯 *Training:*\n"
+        "/train ps — Product Sense interview\n"
+        "/train vacancy — Prep for specific vacancy\n"
+        "/train english — English practice\n"
+        "/stop — End current session"
     ))
 
 
+# ── Polling ───────────────────────────────────────────────────────────────────
+
 def run_polling():
-    logger.info("Bot started — send a job URL, #post idea, or voice note")
+    logger.info("Bot started")
     offset = 0
     while True:
         try:
@@ -469,14 +794,8 @@ def run_polling():
                     process_message(message)
 
             now = time.time()
-            to_flush = [
-                cid for cid, job in list(pending_jobs.items())
-                if now - job["ts"] >= FLUSH_AFTER
-            ]
-            for cid in to_flush:
-                job = pending_jobs.pop(cid)
-                logger.info(f"Flushing pending job for chat {cid}")
-                _execute_job(cid, job)
+            for cid in [c for c, j in list(pending_jobs.items()) if now - j["ts"] >= FLUSH_AFTER]:
+                _execute_job(cid, pending_jobs.pop(cid))
 
         except Exception as e:
             logger.error(f"Polling error: {e}", exc_info=True)
