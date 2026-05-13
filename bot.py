@@ -38,6 +38,13 @@ AVAILABLE_MODELS = [
     ("claude-opus-4-7",           "anthropic", "Anthropic · most capable"),
 ]
 
+_default_model_id = os.environ.get("DEFAULT_MODEL", OPENAI_MODEL_TRAINING)
+_default_provider = next(
+    (p for m, p, _ in AVAILABLE_MODELS if m == _default_model_id),
+    "openai"
+)
+DEFAULT_MODEL_TUPLE = (_default_model_id, _default_provider)
+
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 NOTION_HEADERS = {
@@ -442,14 +449,14 @@ def _anthropic_completion(messages: list, model: str) -> str:
 
 
 def chat_completion(messages: list, chat_id: int = 0) -> str:
-    model, provider = session_models.get(chat_id, (OPENAI_MODEL_TRAINING, "openai"))
+    model, provider = session_models.get(chat_id, DEFAULT_MODEL_TUPLE)
     if provider == "anthropic":
         return _anthropic_completion(messages, model)
     return _openai_completion(messages, model)
 
 
 def handle_model_command(chat_id: int) -> None:
-    current_model, _ = session_models.get(chat_id, (OPENAI_MODEL_TRAINING, "openai"))
+    current_model, _ = session_models.get(chat_id, DEFAULT_MODEL_TUPLE)
     lines = [f"🤖 *Current model:* `{current_model}`\n\n*Switch to:*\n"]
     for i, (model_id, _, label) in enumerate(AVAILABLE_MODELS, 1):
         marker = "✅ " if model_id == current_model else ""
