@@ -869,7 +869,22 @@ def process_message(message: dict) -> None:
 
 # ── Polling ───────────────────────────────────────────────────────────────────
 
+def register_commands() -> None:
+    commands = [
+        {"command": "train",   "description": "Start training: /train ps | vacancy | english"},
+        {"command": "stop",    "description": "End current training session + get summary"},
+        {"command": "model",   "description": "Switch AI model (OpenAI / Anthropic)"},
+        {"command": "idea",    "description": "Save a LinkedIn post idea"},
+    ]
+    try:
+        http_post(f"{TELEGRAM_API}/setMyCommands", {"commands": commands})
+        logger.info("Bot commands registered")
+    except Exception as e:
+        logger.warning(f"Could not register commands: {e}")
+
+
 def run_polling():
+    register_commands()
     logger.info("Bot started")
     offset = 0
     while True:
