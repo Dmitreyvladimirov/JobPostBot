@@ -21,6 +21,15 @@
 | 2026-05-13 | installing a habit | building / forming a habit | collocation |
 | 2026-05-13 | people who isn't | people who aren't | grammar |
 | 2026-05-13 | we wasn't | we weren't | grammar |
+| 2026-05-13 (real interview) | for lately six years | for the last six or seven years | collocation |
+| 2026-05-13 (real interview) | I am overviewing | I oversee / I monitor | wrong verb — "overviewing" doesn't exist |
+| 2026-05-13 (real interview) | helping them to automate | helping them automate | grammar — helping + verb, no "to" |
+| 2026-05-13 (real interview) | more easy and more faster | easier and faster | comparative form |
+| 2026-05-13 (real interview) | it alerts to the team | it sends an alert to the team | collocation |
+| 2026-05-13 (real interview) | we had safe users | we retained users / saved users from churning | word choice |
+| 2026-05-13 (real interview) | longer distance | longer timeframe | word choice |
+| 2026-05-13 (real interview) | save the manual work | eliminate / reduce the manual work | verb |
+| 2026-05-13 (real interview) | overviewing behavior | monitoring / tracking behavior | wrong verb |
 
 ---
 
@@ -32,6 +41,10 @@
 - **Validation verb:** *validate* > *confirm* > *check* (in order of interview strength)
 - **"Points to":** standard phrase for connecting signal to cause — never "shows to"
 - **Articles:** "the product philosophy", "the core value", "a technical issue" — these are fixed, memorize as units
+- **"Overviewing" doesn't exist:** use "oversee" (управлять, отвечать за) or "monitor" (отслеживать)
+- **Helping + verb (no "to"):** "I helped them automate" not "helped them to automate"
+- **Filler "okay/like":** replace with silence or "let me think for a second"
+- **"For lately X years"** → always "for the last X years"
 
 ---
 
