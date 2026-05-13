@@ -426,12 +426,19 @@ def _anthropic_completion(messages: list, model: str) -> str:
     req.add_header("Content-Type", "application/json")
     req.add_header("x-api-key", ANTHROPIC_API_KEY)
     req.add_header("anthropic-version", "2023-06-01")
+    logger.info(f"Anthropic request starting: model={model}, key_set={bool(ANTHROPIC_API_KEY)}")
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read())["content"][0]["text"].strip()
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            logger.info("Anthropic: got response, reading body")
+            body = resp.read()
+            logger.info(f"Anthropic: body read, {len(body)} bytes")
+            return json.loads(body)["content"][0]["text"].strip()
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"Anthropic {e.code}: {body[:500]}") from e
+    except Exception as e:
+        logger.error(f"Anthropic request failed: {type(e).__name__}: {e}")
+        raise
 
 
 def chat_completion(messages: list, chat_id: int = 0) -> str:
@@ -806,6 +813,21 @@ def process_message(message: dict) -> None:
         except Exception as e:
             logger.error(f"Voice error: {e}", exc_info=True)
             edit_message(chat_id, message_id, f"❌ Transcription failed: {e}")
+        return
+
+    # /testanthropic
+    if text.strip() == "/testanthropic":
+        model_id = "claude-haiku-4-5-20251001"
+        status_msg = send_message(chat_id, f"⏳ Testing Anthropic API ({model_id})...")
+        message_id = status_msg["result"]["message_id"]
+        try:
+            result = _anthropic_completion(
+                [{"role": "user", "content": "Reply with exactly: OK"}],
+                model_id
+            )
+            edit_message(chat_id, message_id, f"✅ Anthropic works: `{result[:100]}`")
+        except Exception as e:
+            edit_message(chat_id, message_id, f"❌ Anthropic failed: {e}")
         return
 
     # /stop
