@@ -61,8 +61,12 @@ def http_post(url: str, payload: dict, headers: dict = None, method: str = "POST
     if headers:
         for k, v in headers.items():
             req.add_header(k, v)
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"HTTP {e.code} from {url.split('/')[2]}: {body[:600]}") from e
 
 
 def http_get(url: str, timeout: int = 60) -> str:
