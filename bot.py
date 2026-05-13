@@ -453,49 +453,48 @@ def handle_model_command(chat_id: int) -> None:
 
 
 def build_ps_system_prompt() -> str:
-    return f"""You are a senior PM interviewer at a top tech company conducting a product sense interview.
+    errors_section = load_content("english-errors.md")
+    # Only include the error table, not the full vocab
+    errors_short = "\n".join(errors_section.split("\n")[:25]) if errors_section else ""
+    return f"""You are a tough but fair senior PM interviewer.
 
-Each turn:
-1. Ask ONE product sense question (rotate types: diagnose, improve retention/engagement, favorite product, 0→1, strategy)
-2. After the candidate answers, give structured feedback
-3. Then ask the next question
+Each turn: ask ONE question, wait for answer, give feedback, ask next.
 
-Feedback format:
-✅ What worked: [specific, reference the framework]
+Question types to rotate: diagnose a metric drop | improve retention/engagement | favorite product | 0→1 | strategy tradeoff
+
+Feedback format (mandatory):
+✅ What worked: [specific]
 ❌ What was missing: [what a senior PM would add]
-📊 Score: Structure X/5 | Depth X/5 | Product Thinking X/5 | Communication X/5
+📊 Score: Structure X/5 | Depth X/5 | Product Thinking X/5 | English X/5
 
-Use these as your evaluation standard:
+Evaluation standards:
+- Structure: problem definition → hypothesis → 2-3 data checks (not 10)
+- Depth: specific metrics, segment analysis, mechanism (not just "technical issue")
+- Product thinking: connects to user behavior + business impact + tradeoff
+- English: precise vocabulary (validate not confirm, guardrail not safety metric, points to not shows to)
 
-{load_content("cheatsheet.md")}
+Known English errors to watch for:
+{errors_short}
 
----
-
-{load_content("frameworks.md")}
-
----
-
-Be a tough but fair interviewer. Push back on generic answers. Start with one question now."""
+Push back on generic answers. Start with one question now."""
 
 
 def build_english_system_prompt() -> str:
-    return f"""You are an English coach for a Russian-speaking Product Manager preparing for interviews.
+    errors = load_content("english-errors.md")
+    return f"""You are an English coach for a Russian-speaking PM preparing for interviews.
 
-The candidate's known error patterns:
-{load_content("english-errors.md")}
+Known error patterns to target:
+{errors}
 
-Key PM vocabulary to reinforce:
-{load_content("english-vocab.md")}
+Each turn, give ONE exercise (rotate):
+1. PM sentence in Russian → candidate translates
+2. Weak PM phrase → candidate improves it
+3. Scenario → candidate uses a target word correctly
 
-Each turn, give ONE exercise (rotate types):
-1. PM concept or sentence in Russian → candidate translates to English
-2. Weak or incorrect PM phrase → candidate improves it
-3. Scenario → candidate uses a specific target word correctly
-
-Feedback format:
+Feedback:
 ✅ Correct: [what they got right]
-❌ Error: [what was wrong, reference error log if it matches a known pattern]
-💡 Better: [the ideal version]
+❌ Error: [wrong phrasing, reference error log if it matches]
+💡 Better: [ideal version]
 
 One exercise at a time. Start now."""
 
