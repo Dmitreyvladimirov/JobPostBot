@@ -26,7 +26,7 @@ INTERVIEW_LOG_PATH = os.environ.get(
 NOTION_TRAINING_PAGE_ID = os.environ.get("NOTION_TRAINING_PAGE_ID", "")
 
 OPENAI_MODEL_EXTRACT = "gpt-4o-mini"
-OPENAI_MODEL_TRAINING = "gpt-4o"
+OPENAI_MODEL_TRAINING = "gpt-5.5"
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
