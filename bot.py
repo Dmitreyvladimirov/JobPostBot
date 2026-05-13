@@ -3,6 +3,7 @@ import re
 import json
 import time
 import logging
+import threading
 import urllib.request
 import urllib.parse
 from datetime import date, datetime
@@ -352,6 +353,27 @@ def append_post_idea(text: str, chat_id: int) -> None:
 
 # ── Training Module ───────────────────────────────────────────────────────────
 
+def _run_with_keepalive(chat_id: int, message_id: int, fn):
+    """Run fn() in the current thread while a background thread updates the message every 20s."""
+    stop = threading.Event()
+    hints = ["💭 Still thinking...", "💭 Almost there...", "💭 Generating response..."]
+
+    def _updater():
+        i = 0
+        while not stop.wait(20):
+            try:
+                edit_message(chat_id, message_id, hints[i % len(hints)])
+                i += 1
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_updater, daemon=True)
+    t.start()
+    try:
+        return fn()
+    finally:
+        stop.set()
+
 def load_content(filename: str) -> str:
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "content", filename)
     try:
@@ -515,10 +537,10 @@ def _start_session_with_prompt(chat_id: int, session_type: str, system_prompt: s
     status_msg = send_message(chat_id, "⏳ Loading session...")
     message_id = status_msg["result"]["message_id"]
     try:
-        first_msg = chat_completion([
+        first_msg = _run_with_keepalive(chat_id, message_id, lambda: chat_completion([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": opener},
-        ], chat_id=chat_id)
+        ], chat_id=chat_id))
         active_sessions[chat_id]["history"].append({"role": "assistant", "content": first_msg})
         active_sessions[chat_id]["question_count"] = 1
         edit_message(chat_id, message_id, first_msg)
@@ -611,11 +633,11 @@ def handle_training_message(chat_id: int, text: str) -> None:
     session["history"].append({"role": "user", "content": text})
     session["question_count"] += 1
 
-    status_msg = send_message(chat_id, "💭 ...")
+    status_msg = send_message(chat_id, "💭 Thinking...")
     message_id = status_msg["result"]["message_id"]
     try:
         messages = [{"role": "system", "content": session["system"]}] + session["history"]
-        reply = chat_completion(messages, chat_id=chat_id)
+        reply = _run_with_keepalive(chat_id, message_id, lambda: chat_completion(messages, chat_id=chat_id))
         session["history"].append({"role": "assistant", "content": reply})
         edit_message(chat_id, message_id, reply)
     except Exception as e:
@@ -649,7 +671,7 @@ def end_session(chat_id: int) -> None:
             + session["history"]
             + [{"role": "user", "content": summary_request}]
         )
-        summary = chat_completion(messages, chat_id=chat_id)
+        summary = _run_with_keepalive(chat_id, message_id, lambda: chat_completion(messages, chat_id=chat_id))
 
         _save_session_locally(session, summary, duration_min)
         notion_url = _save_session_to_notion(session, summary, duration_min)
