@@ -324,8 +324,33 @@ def get_telegram_file_bytes(file_id: str) -> tuple[bytes, str]:
         return resp.read(), filename
 
 
+WHISPER_MAX_BYTES = 25 * 1024 * 1024  # OpenAI Whisper API hard limit
+
+WHISPER_MIME_TYPES = {
+    "mp3": "audio/mpeg",
+    "mpeg": "audio/mpeg",
+    "mpga": "audio/mpeg",
+    "mp4": "audio/mp4",
+    "m4a": "audio/mp4",
+    "wav": "audio/wav",
+    "webm": "audio/webm",
+    "ogg": "audio/ogg",
+    "oga": "audio/ogg",
+    "opus": "audio/ogg",
+    "flac": "audio/flac",
+}
+
+
 def transcribe_voice(file_id: str) -> str:
     audio_bytes, filename = get_telegram_file_bytes(file_id)
+
+    if len(audio_bytes) > WHISPER_MAX_BYTES:
+        size_mb = len(audio_bytes) / (1024 * 1024)
+        raise ValueError(f"File too large ({size_mb:.1f} MB > 25 MB limit). Split into smaller parts.")
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "ogg"
+    mime_type = WHISPER_MIME_TYPES.get(ext, "audio/ogg")
+
     boundary = f"----FormBoundary{int(time.time())}"
     crlf = b"\r\n"
     parts = [
@@ -334,7 +359,7 @@ def transcribe_voice(file_id: str) -> str:
         b"whisper-1" + crlf,
         f"--{boundary}".encode() + crlf,
         f'Content-Disposition: form-data; name="file"; filename="{filename}"'.encode() + crlf,
-        b"Content-Type: audio/ogg" + crlf + crlf,
+        f"Content-Type: {mime_type}".encode() + crlf + crlf,
         audio_bytes + crlf,
         f"--{boundary}--".encode() + crlf,
     ]
@@ -342,8 +367,16 @@ def transcribe_voice(file_id: str) -> str:
     req = urllib.request.Request("https://api.openai.com/v1/audio/transcriptions", data=body, method="POST")
     req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        return json.loads(resp.read())["text"]
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())["text"]
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        logger.error(
+            f"Whisper API {e.code}: {body_text} "
+            f"(filename={filename}, ext={ext}, mime={mime_type}, size={len(audio_bytes)})"
+        )
+        raise
 
 
 def append_post_idea(text: str, chat_id: int) -> None:
